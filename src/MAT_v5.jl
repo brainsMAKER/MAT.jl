@@ -262,13 +262,14 @@ end
 
 truncate_to_uint8(x) = x % UInt8
 
-function read_string_new(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
+function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     (dtype, nbytes, hbytes) = read_header(f, swap_bytes)
     read_type = READ_TYPES[dtype]
     if sizeof(read_type)*prod(dimensions) != nbytes
         error("Invalid element length")
     end
-    # the last dimension corresponds the String direction
+    # We will assume that the last dimension corresponds the String direction
+    # This behavior is consistent with matlab for ndim<=2, but not for ndim>2
     ndim = length(dimensions)
     if dtype <= 2 || dtype == miUTF8
         # If dtype <= 2, this may give an error on non-ASCII characters, since the string
@@ -319,7 +320,7 @@ function read_string_new(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     data
 end
 
-function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
+function read_string_old(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     (dtype, nbytes, hbytes) = read_header(f, swap_bytes)
     if dtype <= 2 || dtype == 16
         # If dtype <= 2, this may give an error on non-ASCII characters, since the string
@@ -407,7 +408,7 @@ function read_matrix(f::IO, swap_bytes::Bool)
         data = read_struct(f, swap_bytes, dimensions, class == mxOBJECT_CLASS)
     elseif class == mxSPARSE_CLASS
         data = read_sparse(f, swap_bytes, dimensions, flags)
-    elseif class == mxCHAR_CLASS && length(dimensions) <= 2
+    elseif class == mxCHAR_CLASS  # && length(dimensions) <= 2
         data = read_string(f, swap_bytes, dimensions)
     elseif class == mxFUNCTION_CLASS
         data = read_matrix(f, swap_bytes)
