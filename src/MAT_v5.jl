@@ -74,9 +74,9 @@ const mxFUNCTION_CLASS = 16
 const mxOPAQUE_CLASS = 17
 const READ_TYPES = Type[
     Int8, UInt8, Int16, UInt16, Int32, UInt32, Float32, Union{},
-    Float64, Union{}, Union{}, Int64, UInt64]
+    Float64, Union{}, Union{}, Int64, UInt64, Union{}, Union{}, UInt8, UInt16, UInt32]
 const CONVERT_TYPES = Type[
-    Union{}, Union{}, Union{}, Union{},
+    Union{}, Union{}, Union{}, Char,
     Union{}, Float64, Float32, Int8, UInt8,
     Int16, UInt16, Int32, UInt32, Int64, UInt64]
 
@@ -246,7 +246,7 @@ function read_sparse(f::IO, swap_bytes::Bool, dimensions::Vector{Int32}, flags::
     end
     if length(ir) > length(pr)
         # Fix for Issue #169, xref https://github.com/JuliaLang/julia/pull/40523
-        #= 
+        #=
         # The following expression must be obeyed according to
         # https://github.com/JuliaLang/julia/blob/b3e4341d43da32f4ab6087230d98d00b89c8c004/stdlib/SparseArrays/src/sparsematrix.jl#L86-L90
         @debug "SparseMatrixCSC" m n jc ir pr
@@ -261,6 +261,63 @@ function read_sparse(f::IO, swap_bytes::Bool, dimensions::Vector{Int32}, flags::
 end
 
 truncate_to_uint8(x) = x % UInt8
+
+function read_string_new(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
+    (dtype, nbytes, hbytes) = read_header(f, swap_bytes)
+    read_type = READ_TYPES[dtype]
+    if sizeof(read_type)*prod(dimensions) != nbytes
+        error("Invalid element length")
+    end
+    # the last dimension corresponds the String direction
+    ndim = length(dimensions)
+    if dtype <= 2 || dtype == miUTF8
+        # If dtype <= 2, this may give an error on non-ASCII characters, since the string
+        # would be ISO-8859-1 and not UTF-8. However, MATLAB 2012b always saves strings with
+        # a 2-byte encoding in v6 format, and saves UTF-8 in v7 format. Thus, this may never
+        # happen in the wild.
+        chars = read!(f, Array{UInt8}(undef, tuple(convert(Vector{Int}, dimensions)...)))
+        data = String[rstrip(String(s)) for s in eachslice(chars; dims=tuple((1:ndim-1)...))]
+        # Version above is somehow more efficient than
+        # `data = String.(dropdims(mapslices(rstrip∘String, chars; dims=ndim); dims=ndim))`
+    elseif dtype <= 4 || dtype == miUTF16
+        # Technically, if dtype == 3 or dtype == 4, this is ISO-8859-1 and not Unicode.
+        # However, the first 256 Unicode code points are derived from ISO-8859-1, so UCS-2
+        # is a superset of 2-byte ISO-8859-1.
+        chars = read_bswap(f, swap_bytes, UInt16, tuple(convert(Vector{Int}, dimensions)...))
+        CIs = CartesianIndices(tuple(convert(Vector{Int}, dimensions[1:ndim-1])...))
+        bufs = [IOBuffer() for ci in CIs]
+        length_slice = ndim == 0 ? 1 : dimensions[ndim]
+        for ci in CIs
+            for j in 1:length_slice
+                char = convert(Char, chars[ci, j])
+                if 255 < convert(UInt32, char)
+                    # Newer versions of MATLAB seem to write some mongrel UTF-8...
+                    char = String([truncate_to_uint8(chars[ci, j] >> 8), truncate_to_uint8(chars[ci, j])])[1]
+                end
+                write(bufs[ci], char)
+            end
+        end
+        data = String[rstrip(String(take!(buf))) for buf in bufs]
+    elseif dtype == miUTF32
+        chars = read_bswap(f, swap_bytes, UInt32, tuple(convert(Vector{Int}, dimensions)...))
+        char_buffer = Vector{Char}(undef, length_slice)
+        data = String[rstrip(String(copyto!(char_buffer, s))) for s in eachslice(chars; dims=tuple((1:ndim-1)...))]
+        # Version above is as expected more efficient than
+        # `data = String[(rstrip∘String)(Char.(s)) for s in eachslice(chars; dims=tuple((1:ndim-1)...))]`
+        # which is somehow more efficient than
+        # `data = String.(dropdims(mapslices(rstrip∘String, convert(Array{Char}, chars); dims=ndim); dims=ndim))`
+    else
+        error("Unsupported string type")
+    end
+    if any(dimensions == 0) || length(data) == 0
+        data = ""
+    elseif ndims(data) == 0
+        # no returning 0-dimensionnal arrays
+        data = data[1]
+    end
+    skip_padding(f, nbytes, hbytes)
+    data
+end
 
 function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     (dtype, nbytes, hbytes) = read_header(f, swap_bytes)
