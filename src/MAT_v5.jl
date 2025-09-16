@@ -333,6 +333,33 @@ function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     data
 end
 
+# read_matrix but only for miMATRIX, mxCHAR_CLASS and calls read_data instead of read_string
+function read_char_array(f::IO, swap_bytes::Bool)
+    (dtype, nbytes) = read_header(f, swap_bytes)
+    if dtype == miCOMPRESSED
+        return read_char_array(ZlibDecompressorStream(IOBuffer(read!(f, Vector{UInt8}(undef, nbytes)))), swap_bytes)
+    elseif dtype != miMATRIX
+        error("Unexpected data type")
+    elseif nbytes == 0
+        return ("", "")
+    end
+
+    flags = read_element(f, swap_bytes, UInt32)
+    class = flags[1] & 0xFF
+
+    if class != mxCHAR_CLASS
+        error("Unexpected array type (class)")
+    end
+
+    dimensions = read_element(f, swap_bytes, Int32)
+    name = String(read_element(f, swap_bytes, UInt8))
+
+    local data
+    data = read_data(f, swap_bytes, Char, dimensions)
+
+    return (name, data)
+end
+
 # Read matrix data
 function read_matrix(f::IO, swap_bytes::Bool)
     (dtype, nbytes) = read_header(f, swap_bytes)
@@ -376,9 +403,8 @@ function read_matrix(f::IO, swap_bytes::Bool)
         data = read_string(f, swap_bytes, dimensions)
         if length(dimensions) > 2
             @warn "Reading MATLAB char arrays with more than 2 dimensions can be inconsistent \
-                because use the last dimension as the String direction.\n\
-                Conider using `MAT.MAT_v5.read_data(seek(matfile, \
-                MAT.MAT_v5.getvarnames(matfile)[\"$name\"]), $swap_bytes, Char, $dimensions)`."
+                because we use the last dimension as the String direction.\n\
+                Conider using `MAT.MAT_v5.read_char_array(matfile, \"$name\")`."
         end
     elseif class == mxFUNCTION_CLASS
         data = read_matrix(f, swap_bytes)
@@ -411,6 +437,7 @@ function read(matfile::Matlabv5File)
     end
     vars
 end
+
 # Read only variable names from an HDF5 file
 function getvarnames(matfile::Matlabv5File)
     if !isdefined(matfile, :varnames)
@@ -451,6 +478,17 @@ function read(matfile::Matlabv5File, varname::String)
     end
     seek(matfile.ios, varnames[varname])
     (name, data) = read_matrix(matfile.ios, matfile.swap_bytes)
+    data
+end
+
+# Read a raw char array from a MAT file
+function read_char_array(matfile::Matlabv5File, varname::String)
+    varnames = getvarnames(matfile)
+    if !haskey(varnames, varname)
+        error("no variable $varname in file")
+    end
+    seek(matfile.ios, varnames[varname])
+    (name, data) = read_char_array(matfile.ios, matfile.swap_bytes)
     data
 end
 
