@@ -607,7 +607,7 @@ function read(obj::Union{HDF5.Dataset,HDF5.Attribute}, ::Type{MatlabString})
     elseif ndims(data) == 2
         return datap = String[rstrip(String(convert(Vector{Char}, vec(data[i, :])))) for i = 1:size(data, 1)]
     else
-        return data
+        return convert(Array{Char}, data)
     end
 end
 

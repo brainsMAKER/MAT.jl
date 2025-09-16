@@ -262,7 +262,7 @@ end
 
 truncate_to_uint8(x) = x % UInt8
 
-function MAT_uint16_to_char(c_u16::UInt16)
+function MATv5_uint16_to_char(c_u16::UInt16)
     char = convert(Char, c_u16)
     if 255 < convert(UInt32, char)
         # Newer versions of MATLAB seem to write some mongrel UTF-8...
@@ -310,7 +310,7 @@ function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
         chars = read_bswap(f, swap_bytes, UInt16, dim_tuple)
         length_slice = ndim==0 ? 1 : dimensions[ndim]
         buf = Vector{Char}(undef, length_slice)
-        data = map(ci -> String(map!(MAT_uint16_to_char, buf, view(chars, ci, :))), CI_slices)
+        data = map(ci -> String(map!(MATv5_uint16_to_char, buf, view(chars, ci, :))), CI_slices)
     elseif dtype == miUTF32
         chars = read_bswap(f, swap_bytes, UInt32, dim_tuple)
         length_slice = ndim==0 ? 1 : dimensions[ndim]
@@ -319,8 +319,8 @@ function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     else
         error("Unsupported string type")
     end
-    if ndims(data) > 0 && size(data)[1] == 1
-        data = dropdims(data; dims=1)
+    if size(data, 1) == 1
+        data = reshape(data, size(data)[2:end])
     end
     map!(String∘rstrip, data, data)
     if any(dimensions == 0) || length(data) == 0
@@ -333,7 +333,7 @@ function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     data
 end
 
-# read_matrix but only for miMATRIX, mxCHAR_CLASS and calls read_data instead of read_string
+# read_matrix but only for mxCHAR_CLASS and calls read_data instead of read_string
 function read_char_array(f::IO, swap_bytes::Bool)
     (dtype, nbytes) = read_header(f, swap_bytes)
     if dtype == miCOMPRESSED
