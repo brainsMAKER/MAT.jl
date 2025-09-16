@@ -279,13 +279,19 @@ function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     end
     # We will assume that the last dimension corresponds the String direction.
     # This behavior is consistent with certain third-party libraries like SciPy.io.
-    # This behavior is somewhat consistent with MATLAB for ndim<=2, although MATLAB
-    # appears to interpret char arrays as if the chars are splitted (not strings)
-    # i.e. in MATLAB, `['ab' 'ef' ; 'hi' 'kl'] == ['a' 'b' 'e' 'f' ; 'h' 'i' 'k' 'l']`
-    # but this array will be printed `2×4 char ['abef' ; 'hikl']`.
+    # It is consistent with MATLAB (and previous behavior) for ndim<=2,
+    # although MATLAB interprets char arrays as sequences of chars in the second
+    # dimension, not as strings.
+    # I.e. in MATLAB, `['ab' 'ef' ; 'hi' 'kl'] == ['a' 'b' 'e' 'f' ; 'h' 'i' 'k' 'l']`
+    # but this array will be displayed `2×4 char array ['abef' ; 'hikl']`.
+    # In MATLAB, converting from string array to char array will expand the string as
+    # as char rows (adding a second dimension), padding with blank spaces as needed.
+    # i.e; a `2×1×2 string array` `A` with string lengths<=5, becomes `2×5×1×2 char array`
+    # when using `char(A)`. Then converting back with `string(char(A))` lead to
+    # a `2×1×2 string array` with all string padded with blank spaces to have length 5.
     ndim = length(dimensions)
     dim_tuple = tuple(convert(Vector{Int}, dimensions)...)
-    CI_slices = CartesianIndices(dim_tuple[1:ndim-1]))
+    CI_slices = CartesianIndices(dim_tuple[1:ndim-1])
     if dtype <= 2 || dtype == miUTF8
         # If dtype <= 2, this may give an error on non-ASCII characters, since the string
         # would be ISO-8859-1 and not UTF-8. However, MATLAB 2012b always saves strings with
@@ -304,7 +310,7 @@ function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
         chars = read_bswap(f, swap_bytes, UInt16, dim_tuple)
         length_slice = ndim==0 ? 1 : dimensions[ndim]
         buf = Vector{Char}(undef, length_slice)
-        data = map(ci -> String(map!(special_uint16_to_char, buf, view(chars, ci, :))), CI_slices)
+        data = map(ci -> String(map!(MAT_uint16_to_char, buf, view(chars, ci, :))), CI_slices)
     elseif dtype == miUTF32
         chars = read_bswap(f, swap_bytes, UInt32, dim_tuple)
         length_slice = ndim==0 ? 1 : dimensions[ndim]
@@ -317,7 +323,7 @@ function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     if any(dimensions == 0) || length(data) == 0
         data = ""
     elseif ndims(data) == 0
-        # no returning 0-dimensionnal arrays
+        # no returning 0-dimensional arrays
         data = data[1]
     end
     skip_padding(f, nbytes, hbytes)
