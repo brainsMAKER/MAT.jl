@@ -319,6 +319,9 @@ function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     else
         error("Unsupported string type")
     end
+    if ndims(data) > 0 && size(data)[1] == 1
+        data = dropdims(data; dims=1)
+    end
     map!(String∘rstrip, data, data)
     if any(dimensions == 0) || length(data) == 0
         data = ""
@@ -371,6 +374,12 @@ function read_matrix(f::IO, swap_bytes::Bool)
         data = read_sparse(f, swap_bytes, dimensions, flags)
     elseif class == mxCHAR_CLASS  # && length(dimensions) <= 2
         data = read_string(f, swap_bytes, dimensions)
+        if length(dimensions) > 2
+            @warn "Reading MATLAB char arrays with more than 2 dimensions can be inconsistent \
+                because use the last dimension as the String direction.\n\
+                Conider using `MAT.MAT_v5.read_data(seek(matfile, \
+                MAT.MAT_v5.getvarnames(matfile)[\"$name\"]), $swap_bytes, Char, $dimensions)`."
+        end
     elseif class == mxFUNCTION_CLASS
         data = read_matrix(f, swap_bytes)
     else
