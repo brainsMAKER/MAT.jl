@@ -271,58 +271,81 @@ function MATv5_uint16_to_char(c_u16::UInt16)
     char
 end
 
+function process_char_array(chars::Array{T}; dim::Int=ndims(chars)) where {T<:Union{UInt8, UInt16, UInt32, Char}}
+    if 1 <= dim <= ndims(chars)+1
+        # We assume by default that the last dimension corresponds the String direction,
+        # that is consistent with certain third-party libraries like SciPy.io.
+        # It is consistent with MATLAB (and previous behavior) for ndim<=2,
+        # although MATLAB interprets char arrays as sequences of chars:
+        # in MATLAB, `['ab' 'ef' ; 'hi' 'kl'] == ['a' 'b' 'e' 'f' ; 'h' 'i' 'k' 'l']`
+        # but this array will be displayed `2×4 char array ['abef' ; 'hikl']`.
+        # In MATLAB, converting from string array to char array will expand the string as
+        # as char rows (adding a second dimension), padding with blank spaces as needed
+        # I.e a `2×1×2 string array` `A` with string lengths<=5, becomes `2×5×1×2 char array`
+        # when using `char(A)`. Then converting back with `string(char(A))` lead to a
+        # `2×1×2 string array` with all strings padded with blank spaces to have length 5.
+        sz = size(chars)
+        # eachslice with multiple dims (alternative) requires VERSION >= v"1.9"
+        CIs1 = CartesianIndices(sz[1:dim-1])
+        CIs2 = CartesianIndices(sz[dim+1:ndims(chars)])
+        if T==UInt8 || T==Char
+            data = [String(view(chars, ci1, :, ci2)) for ci1 in CIs1, ci2 in CIs2]
+        else
+            length_slice = size(chars, dim)
+            buf = Vector{Char}(undef, length_slice)
+            if T==UInt16
+                data = [String(map!(MATv5_uint16_to_char, buf, view(chars, ci1, :, ci2)))
+                        for ci1 in CIs1, ci2 in CIs2]
+            else # T==UInt32
+                data = [String(copyto!(buf, view(chars, ci1, :, ci2)))
+                        for ci1 in CIs1, ci2 in CIs2]
+            end
+        end
+        if dim <= ndims(chars)
+            map!(String∘rstrip, data, data)
+        end
+    else
+        # conversion to Char only
+        if T==UInt16
+            data = map(MATv5_uint16_to_char, chars)
+        else
+            data = convert(Array{Char}, chars)
+        end
+    end
+    data
+end
+
 function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     (dtype, nbytes, hbytes) = read_header(f, swap_bytes)
     read_type = READ_TYPES[dtype]
     if sizeof(read_type)*prod(dimensions) != nbytes
         error("Invalid element length")
     end
-    # We will assume that the last dimension corresponds the String direction.
-    # This behavior is consistent with certain third-party libraries like SciPy.io.
-    # It is consistent with MATLAB (and previous behavior) for ndim<=2,
-    # although MATLAB interprets char arrays as sequences of chars in the second
-    # dimension, not as strings.
-    # I.e. in MATLAB, `['ab' 'ef' ; 'hi' 'kl'] == ['a' 'b' 'e' 'f' ; 'h' 'i' 'k' 'l']`
-    # but this array will be displayed `2×4 char array ['abef' ; 'hikl']`.
-    # In MATLAB, converting from string array to char array will expand the string as
-    # as char rows (adding a second dimension), padding with blank spaces as needed.
-    # i.e; a `2×1×2 string array` `A` with string lengths<=5, becomes `2×5×1×2 char array`
-    # when using `char(A)`. Then converting back with `string(char(A))` lead to
-    # a `2×1×2 string array` with all string padded with blank spaces to have length 5.
-    ndim = length(dimensions)
     dim_tuple = tuple(convert(Vector{Int}, dimensions)...)
-    CI_slices = CartesianIndices(dim_tuple[1:ndim-1])
     if dtype <= 2 || dtype == miUTF8
         # If dtype <= 2, this may give an error on non-ASCII characters, since the string
         # would be ISO-8859-1 and not UTF-8. However, MATLAB 2012b always saves strings with
         # a 2-byte encoding in v6 format, and saves UTF-8 in v7 format. Thus, this may never
         # happen in the wild.
         chars = read!(f, Array{UInt8}(undef, dim_tuple))
-        data = map(ci->String(view(chars, ci, :)), CI_slices)
-        # Alternative below requires VERSION >= v"1.9" due to `eachslice`
-        # `data = String[rstrip(String(s)) for s in eachslice(chars; dims=tuple((1:ndim-1)...))]`
-        # Both are much more efficient than
-        # `data = String.(dropdims(mapslices(rstrip∘String, chars; dims=ndim); dims=ndim))`
     elseif dtype <= 4 || dtype == miUTF16
         # Technically, if dtype == 3 or dtype == 4, this is ISO-8859-1 and not Unicode.
         # However, the first 256 Unicode code points are derived from ISO-8859-1, so UCS-2
         # is a superset of 2-byte ISO-8859-1.
         chars = read_bswap(f, swap_bytes, UInt16, dim_tuple)
-        length_slice = ndim==0 ? 1 : dimensions[ndim]
-        buf = Vector{Char}(undef, length_slice)
-        data = map(ci -> String(map!(MATv5_uint16_to_char, buf, view(chars, ci, :))), CI_slices)
     elseif dtype == miUTF32
         chars = read_bswap(f, swap_bytes, UInt32, dim_tuple)
-        length_slice = ndim==0 ? 1 : dimensions[ndim]
-        buf = Vector{Char}(undef, length_slice)
-        data = map(ci -> String(copyto!(buf, view(chars, ci, :))), CI_slices)
     else
         error("Unsupported string type")
     end
-    if size(data, 1) == 1
-        data = reshape(data, size(data)[2:end])
+    if length(dimensions) <= 2
+        data = process_char_array(chars)
+        if size(data, 1) == 1
+            data = reshape(data, size(data)[2:end])
+        end
+    else
+        data = chars
     end
-    map!(String∘rstrip, data, data)
     if any(dimensions == 0) || length(data) == 0
         data = ""
     elseif ndims(data) == 0
@@ -331,33 +354,6 @@ function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     end
     skip_padding(f, nbytes, hbytes)
     data
-end
-
-# read_matrix but only for mxCHAR_CLASS and calls read_data instead of read_string
-function read_char_array(f::IO, swap_bytes::Bool)
-    (dtype, nbytes) = read_header(f, swap_bytes)
-    if dtype == miCOMPRESSED
-        return read_char_array(ZlibDecompressorStream(IOBuffer(read!(f, Vector{UInt8}(undef, nbytes)))), swap_bytes)
-    elseif dtype != miMATRIX
-        error("Unexpected data type")
-    elseif nbytes == 0
-        return ("", "")
-    end
-
-    flags = read_element(f, swap_bytes, UInt32)
-    class = flags[1] & 0xFF
-
-    if class != mxCHAR_CLASS
-        error("Unexpected array type (class)")
-    end
-
-    dimensions = read_element(f, swap_bytes, Int32)
-    name = String(read_element(f, swap_bytes, UInt8))
-
-    local data
-    data = read_data(f, swap_bytes, Char, dimensions)
-
-    return (name, data)
 end
 
 # Read matrix data
@@ -399,12 +395,22 @@ function read_matrix(f::IO, swap_bytes::Bool)
         data = read_struct(f, swap_bytes, dimensions, class == mxOBJECT_CLASS)
     elseif class == mxSPARSE_CLASS
         data = read_sparse(f, swap_bytes, dimensions, flags)
-    elseif class == mxCHAR_CLASS  # && length(dimensions) <= 2
+    elseif class == mxCHAR_CLASS
         data = read_string(f, swap_bytes, dimensions)
         if length(dimensions) > 2
-            @warn "Reading MATLAB char arrays with more than 2 dimensions can be inconsistent \
-                because we use the last dimension as the String direction.\n\
-                Conider using `MAT.MAT_v5.read_char_array(matfile, \"$name\")`."
+            nd = length(dimensions)
+            @warn """
+                Reading MATLAB char arrays with more than 2 dimensions ($nd here) can be inconsistent.
+                Depending on $name,
+                - try using `MAT.MAT_v5.process_char_array($name; dim=...)` with:
+                    - if $name is an array of strings:
+                        - `dim=2` if saved in MATLAB
+                        - `dim=$nd` if saved with a third-party library
+                    - if it is an actual char array:
+                        - `dim=$(nd+1)`
+                        - `dim=0`
+                - or fall back on `convert(Array{Char}, $name)`.
+                """
         end
     elseif class == mxFUNCTION_CLASS
         data = read_matrix(f, swap_bytes)
@@ -478,17 +484,6 @@ function read(matfile::Matlabv5File, varname::String)
     end
     seek(matfile.ios, varnames[varname])
     (name, data) = read_matrix(matfile.ios, matfile.swap_bytes)
-    data
-end
-
-# Read a raw char array from a MAT file
-function read_char_array(matfile::Matlabv5File, varname::String)
-    varnames = getvarnames(matfile)
-    if !haskey(varnames, varname)
-        error("no variable $varname in file")
-    end
-    seek(matfile.ios, varnames[varname])
-    (name, data) = read_char_array(matfile.ios, matfile.swap_bytes)
     data
 end
 
