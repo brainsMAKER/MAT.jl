@@ -302,6 +302,10 @@ function process_char_array(chars::Array{T}; dim::Int=ndims(chars)) where {T<:Un
             end
         end
         if dim <= ndims(chars)
+            # we did squeeze a dimension thus keep processing
+            if size(data, 1) == 1
+                data = reshape(data, size(data)[2:end])
+            end
             map!(String∘rstrip, data, data)
         end
     else
@@ -340,9 +344,6 @@ function read_string(f::IO, swap_bytes::Bool, dimensions::Vector{Int32})
     end
     if length(dimensions) <= 2
         data = process_char_array(chars)
-        if size(data, 1) == 1
-            data = reshape(data, size(data)[2:end])
-        end
     else
         data = chars
     end
@@ -398,19 +399,22 @@ function read_matrix(f::IO, swap_bytes::Bool)
     elseif class == mxCHAR_CLASS
         data = read_string(f, swap_bytes, dimensions)
         if length(dimensions) > 2
-            nd = length(dimensions)
+            @warn "Reading MATLAB char arrays with more than 2 dimensions \
+                ($(length(dimensions)) here) can be inconsistent \
+                -> returned a raw array."
+            na = "char_array"
+            nd = "ndims($na)"
             @warn """
-                Reading MATLAB char arrays with more than 2 dimensions ($nd here) can be inconsistent.
-                Depending on $name,
-                - try using `MAT.MAT_v5.process_char_array($name; dim=...)` with:
-                    - if $name is an array of strings:
+                Depending on the $na,
+                - try using `MAT.MAT_v5.process_char_array($na; dim=……)` with:
+                    - if $na should be an array of strings:
                         - `dim=2` if saved in MATLAB
                         - `dim=$nd` if saved with a third-party library
-                    - if it is an actual char array:
-                        - `dim=$(nd+1)`
+                    - if it should be actual char array:
+                        - `dim=(1 + $nd)`
                         - `dim=0`
-                - or fall back on `convert(Array{Char}, $name)`.
-                """
+                - or fall back on `convert(Array{Char}, $na)`.
+                """ maxlog=1
         end
     elseif class == mxFUNCTION_CLASS
         data = read_matrix(f, swap_bytes)
